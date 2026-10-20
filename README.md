@@ -1,80 +1,120 @@
 # Blog Management REST API
 
-REST API for a blog platform with three access levels: **Admin**, **User**, **Guest**.
-Built with Node.js, Express, MySQL, JWT, and bcrypt.
+REST API for a blog platform with three access levels: **Admin**, **User** and **Guest**.
+It supports authentication, user management, blog management, role-based authorization,
+input validation, and public blog search and filtering.
 
-## Postman documentation
-Published docs: https://documenter.getpostman.com/view/54598172/2sBYHSz1cm2
+## Tech Stack
 
-## Features
-- Register / login with JWT, bcrypt-hashed passwords
-- Role-based access control (guest / user / admin)
-- Blog CRUD with ownership rules (admin can edit/delete any blog)
-- Public blog listing with partial title search and category filter, author info included
-- Admin user management (list, get, activate/deactivate)
-- Input validation (express-validator), consistent JSON errors, correct HTTP status codes
+- Node.js + Express 4
+- MySQL with the `mysql2` driver (parameterized queries only)
+- JWT (`jsonwebtoken`) for token-based authentication
+- bcrypt for password hashing
+- express-validator for input validation
+- dotenv for configuration
+
+## Project Structure
+
+```
+blog-api/
+├── database/schema.sql        # database and table creation script
+├── postman/                   # Postman collection export
+├── src/
+│   ├── config/db.js           # MySQL connection pool
+│   ├── constants/             # roles, auth settings (no magic values)
+│   ├── controllers/           # business logic (auth, user, blog)
+│   ├── middleware/            # authenticate, authorize, validate,
+│   │                          # rejectProtectedFields, errorHandler
+│   ├── routes/                # URL -> controller mapping
+│   ├── validators/            # express-validator rule sets
+│   ├── utils/                 # asyncHandler, response serializers
+│   └── app.js                 # express app and route mounting
+└── server.js                  # entry point
+```
 
 ## Setup
-```bash
-git clone <your-repo-url> && cd blog-api
-npm install
-cp .env.example .env        
-mysql -u root -p < database/schema.sql
-npm run dev               
-```
-Server runs on `http://localhost:3000`.
 
-### Create the admin user
-Register through `POST /api/auth/register`, then promote manually:
+1. `npm install`
+2. Copy `.env.example` to `.env` and fill in `PORT`, `DB_HOST`, `DB_PORT`, `DB_USER`,
+   `DB_PASSWORD`, `DB_NAME`, `JWT_SECRET`, `JWT_EXPIRES_IN`.
+3. Create the database and tables by running `database/schema.sql` in MySQL
+   (command line: `mysql -u root -p < database/schema.sql`, or run it as a script in DBeaver).
+4. `npm run dev` (or `npm start`). The server runs on `http://localhost:3000` by default.
+
+### Creating an admin user
+
+Admins are never created through the API. Register a user normally, then run in MySQL:
+
 ```sql
-USE blogdb;
-UPDATE users SET role = 'admin' WHERE email = 'admin@example.com';
+UPDATE blogdb.users SET role = 'admin' WHERE email = 'admin@example.com';
 ```
 
-## Project structure
-```
-src/
-  config/       db pool
-  constants/    roles, auth settings
-  controllers/  request handling + business logic
-  middleware/   authenticate, authorize, validate, errorHandler, rejectProtectedFields
-  routes/       URL -> controller mapping
-  validators/   express-validator rule sets
-  utils/        asyncHandler, response serializers (never expose password)
-database/schema.sql
-postman/blog-api.postman_collection.json
-```
+Log in again afterwards to get a token for the admin account.
+
+## Authorization Model
+
+- `authenticate` checks the `Authorization: Bearer <token>` header, verifies the JWT, and
+  re-checks in the database that the account exists and is active. A deactivated user loses
+  access immediately, even with an unexpired token.
+- `authorize(ROLES.ADMIN)` restricts a route to admins.
+- Blog update and delete follow an ownership rule: the blog's owner **or** an admin.
+- Registration ignores any `role` sent by the client. New accounts are always `user`.
+- Profile updates accept only `firstname` and `lastname`. Sending `role` or `isActive` returns 403.
+- An admin cannot deactivate their own account.
 
 ## Endpoints
+
 Send the token as `Authorization: Bearer <token>`.
 
-| Method | Path | Access | Notes |
-|---|---|---|---|
-| POST | /api/auth/register | Public | 201; role/isActive in body are ignored |
-| POST | /api/auth/login | Public | 401 bad credentials, 403 deactivated |
-| GET | /api/users/profile | Auth | Own profile |
-| PUT | /api/users/profile/update | Auth | firstname/lastname only; role/isActive -> 403 |
-| PATCH | /api/users/password | Auth | Min 8 chars, hashed |
-| GET | /api/users | Admin | No passwords returned |
-| GET | /api/users/:id | Admin | 404 if missing |
-| PATCH | /api/users/:id/status | Admin | `{ "isActive": true/false }` |
-| GET | /api/blogs | Public | `?title=` (partial) `&category=` |
-| GET | /api/blogs/:id | Public | 404 if missing |
-| POST | /api/blogs/create | Auth | userId taken from token |
-| PUT | /api/blogs/update/:id | Owner or Admin | 403 otherwise |
-| DELETE | /api/blogs/:id | Owner or Admin | 403 otherwise |
+| #  | Method | Endpoint                  | Access     | Purpose                         |
+|----|--------|---------------------------|------------|---------------------------------|
+| 1  | POST   | /api/auth/register        | Public     | Register a new user             |
+| 2  | POST   | /api/auth/login           | Public     | Login and receive auth token    |
+| 3  | GET    | /api/users                | Admin      | Get all users                   |
+| 4  | GET    | /api/users/:id            | Admin      | Get a specific user             |
+| 5  | PATCH  | /api/users/:id/status     | Admin      | Activate/deactivate a user      |
+| 6  | GET    | /api/users/profile        | User/Admin | Get own profile                 |
+| 7  | PUT    | /api/users/profile/update | User/Admin | Update own profile              |
+| 8  | PATCH  | /api/users/password       | User/Admin | Update own password             |
+| 9  | POST   | /api/blogs/create         | User/Admin | Create a blog                   |
+| 10 | GET    | /api/blogs                | Public     | Get blog list / search / filter |
+| 11 | GET    | /api/blogs/:id            | Public     | Get a specific blog             |
+| 12 | PUT    | /api/blogs/update/:id     | User/Admin | Update a blog                   |
+| 13 | DELETE | /api/blogs/delete/:id     | User/Admin | Delete a blog                   |
 
-## Status codes
-200 OK, 201 Created, 400 validation/invalid ID, 401 missing/invalid token or bad credentials,
-403 forbidden, 404 not found, 409 duplicate email, 500 unexpected error.
+`GET /api/blogs` supports `?title=` (partial match) and `?category=` (exact match). They can be combined.
+`DELETE /api/blogs/:id` also works as an alias.
 
-## Design notes
-- Deactivation takes effect immediately: the auth middleware re-checks `isActive` in the DB on every request.
-- Login returns the same 401 message for unknown email and wrong password (prevents email enumeration).
-- All SQL uses parameterized queries.
-- An admin cannot deactivate their own account (prevents lock-out).
+## Status Codes
 
-## Testing
-Import `postman/blog-api.postman_collection.json` into Postman. Set `baseUrl` if your port differs.
-Run the **1. Auth** folder first (it saves tokens), run the admin SQL above after registering the admin
-account and before "Login admin", then run the remaining folders in order.
+| Code | Meaning |
+|------|---------|
+| 200 / 201 | Success / created |
+| 400 | Validation error or invalid ID |
+| 401 | Missing or invalid token, or wrong credentials |
+| 403 | Not allowed (wrong role, not the owner, deactivated account) |
+| 404 | Resource not found |
+| 409 | Email already registered |
+| 500 | Unexpected server error |
+
+## Error Response Shape
+
+```json
+{ "message": "You are not authorized to update this blog." }
+```
+
+Validation errors also include the failing fields:
+
+```json
+{
+  "message": "Validation failed.",
+  "errors": [{ "field": "email", "message": "Email format is invalid." }]
+}
+```
+
+## Postman
+
+Published documentation: https://documenter.getpostman.com/view/54598172/2sBYHSz1m2
+
+The collection export is in `postman/blog-api.postman_collection.json`.
+Run it with the server up. Before the first run, promote the admin account (see above).
